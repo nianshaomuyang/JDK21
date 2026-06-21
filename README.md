@@ -19,40 +19,84 @@
 
 ## 零、为什么是 JDK 21？
 
-Spring Boot 3.0 最低要求 JDK 17，Spring Boot 3.2 也只需要 JDK 17。那为什么还要折腾到 JDK 21？
+很多团队还停留在 JDK 8。升级的动力是什么？升到哪个版本？成本多大？
 
-**一句话：JDK 17 能跑，JDK 21 能飞。**
+### 第一步：为什么要升？→ Spring Boot 3 + GraalVM
 
-### 升级收益速览
+Spring Boot 3 支持 GraalVM Native Image，可以将 Java 应用编译成原生二进制：
 
-| 特性 | JDK 17 | JDK 21 | 收益 |
-|------|--------|--------|------|
-| 虚拟线程 | ❌ 没有 | ✅ Final | I/O 密集型服务吞吐量 5-10x |
-| 分代 ZGC | 不分代 | ✅ 分代 | 吞吐量 +10-30%，内存 -10-20% |
-| Pattern Matching | Preview（不稳定） | ✅ Final | 生产可用，编译器穷举检查 |
-| Record Patterns | ❌ 没有 | ✅ Final | 解构赋值，替代 Visitor 模式 |
-| Sequenced Collections | ❌ 没有 | ✅ 有了 | 统一的首尾访问 API |
-| LTS 支持截止 | 2029.9 | 2031.9 | 多 2 年支持 |
+| 指标 | 传统 JVM | GraalVM Native Image | 差距 |
+|------|---------|---------------------|------|
+| 启动时间 | 1-3 秒 | 10-50ms | **50-100x** |
+| 内存占用 | 200-300MB | 30-50MB | **5-6x** |
+| 首次请求延迟 | 1-2 秒 | 30-50ms | **30-50x** |
+| 镜像大小 | 300MB+ | 30-50MB | **6-10x** |
 
-### 升级成本
+对 **Serverless、微服务弹性伸缩、容器化部署** 场景，这是质变：
+- AWS Lambda 冷启动从 3 秒降到 30 毫秒
+- K8s Pod 扩缩容速度提升 50 倍
+- 容器镜像从 300MB 缩到 50MB，拉取速度提升 6 倍
 
-| 维度 | 成本 |
-|------|------|
-| 代码改动 | 几乎为零 |
-| 第三方库兼容 | 99% 兼容（Spring Boot 3.2+、HikariCP 5.1+） |
-| 构建工具 | 无需改动 |
-| 测试工作量 | 低 |
-| 风险 | 极低 |
+### 第二步：Spring Boot 3 要求 JDK 17+
 
-### 决策矩阵
+Spring Boot 3.0 最低要求 JDK 17，Spring Boot 3.2 也只需要 JDK 17。
+
+所以升级路径是：**JDK 8 → JDK 17**
+
+### 第三步：那升到 JDK 17 就够了？
+
+不够。JDK 21 有 4 个独占特性，JDK 17 没有：
+
+| JDK 21 独占特性 | 收益 | 场景 |
+|----------------|------|------|
+| **虚拟线程** | I/O 密集型 5-10x 吞吐 | 微服务、网关、聚合层 |
+| **分代 ZGC** | 吞吐 +10-30%，内存 -10-20% | 低延迟、大堆 |
+| **Record Patterns** | 解构赋值，替代 Visitor 模式 | AST 处理、数据解析 |
+| **Sequenced Collections** | 统一的首尾访问 API | 日常集合操作 |
+
+虚拟线程的价值尤其大——它让并发编程回归简单：
+
+```java
+// JDK 17: CompletableFuture 回调地狱
+CompletableFuture.supplyAsync(() -> queryUser(id), pool)
+    .thenCompose(user -> CompletableFuture.allOf(
+        supplyAsync(() -> queryOrders(user.getId()), pool)...
+    ));
+
+// JDK 21: 直接写阻塞代码，如同单线程
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    Future<User> userF = executor.submit(() -> queryUser(id));
+    Future<Order> orderF = executor.submit(() -> queryOrder(id));
+    return new Dashboard(userF.get(), orderF.get());
+}
+```
+
+### 第四步：升级成本
+
+| 升级路径 | 成本 | 风险 |
+|----------|------|------|
+| JDK 8 → JDK 17 | **较高**（模块化、API 变更、第三方库兼容） | 中等 |
+| JDK 17 → JDK 21 | **几乎为零**（代码无需改动） | 极低 |
+
+JDK 8 → 17 的主要坑：
+
+- 模块系统（JPMS）：内部 API 被封装，`sun.misc.*` 等不可直接访问
+- `SecurityManager` 废弃
+- `finalize()` 废弃
+- 第三方库需要升级（Spring Boot 3.2+、HikariCP 5.1+、MyBatis 3.5+）
+
+JDK 17 → 21 几乎零成本：代码改动、第三方库兼容、构建工具都不需要动。
+
+### 结论：既然要升，直接到 21
 
 | 你的情况 | 建议 |
 |----------|------|
+| JDK 8，想用 Spring Boot 3 + GraalVM | ✅ 直接升 JDK 21 |
+| JDK 17，想用虚拟线程 | ✅ 升 JDK 21，成本极低 |
 | 新项目 | ✅ 直接用 JDK 21 |
-| 已有项目，JDK 17 运行中 | ✅ 升级，成本极低 |
-| I/O 密集型服务 | ✅ 强烈建议，虚拟线程收益巨大 |
-| CPU 密集型服务 | ⚠️ 收益主要在 ZGC，按需升级 |
-| 公司基础设施锁定 JDK 17 | ⚠️ 推动基础设施升级 |
+| 公司基础设施锁定 JDK 17 | ⚠️ 推动基础设施升级，长期收益明显 |
+
+**一句话：既然要跨过 JDK 8 → 17 这道坎，不如一步到位到 21。JDK 17 → 21 几乎零成本，但虚拟线程和分代 ZGC 是实实在在的性能红利。**
 
 ---
 
@@ -426,6 +470,59 @@ static String describe(PayResult result) {
         case PayRefunded r                  -> "💰 已退款: " + r.refundAmount();
     };
 }
+```
+
+#### 实战 3：工作流审批流程（解构 + 递归）
+
+场景：请假审批流程，根据金额决定是否需要总监审批。
+
+```java
+// 定义工作流节点类型
+sealed interface WorkflowNode permits Start, Submit, Approve, Decision, End {}
+record Start(String id, WorkflowNode next) implements WorkflowNode {}
+record Submit(String id, String applicant, double amount, WorkflowNode next) implements WorkflowNode {}
+record Approve(String id, String approver, WorkflowNode next) implements WorkflowNode {}
+record Decision(String id, String condition, WorkflowNode trueBranch, WorkflowNode falseBranch) implements WorkflowNode {}
+record End(String id, String status) implements WorkflowNode {}
+
+// 模拟执行工作流（解构 + 递归 + 条件判断）
+static String executeWorkflow(WorkflowNode node, double amount) {
+    return switch (node) {
+        case Start(_, var next) ->
+            "→ 开始\n" + executeWorkflow(next, amount);
+        case Submit(var id, var applicant, var amt, var next) ->
+            "→ " + applicant + " 提交申请，金额: " + amt + "\n"
+                + executeWorkflow(next, amt);
+        case Approve(var id, var approver, var next) ->
+            "→ " + approver + " 审批通过\n"
+                + executeWorkflow(next, amount);
+        case Decision(_, _, var trueBranch, var falseBranch) ->
+            amount > 5000
+                ? "→ 金额 > 5000，需要总监审批\n" + executeWorkflow(trueBranch, amount)
+                : "→ 金额 ≤ 5000，主管审批即可\n" + executeWorkflow(falseBranch, amount);
+        case End(_, var status) ->
+            "→ 流程结束: " + status;
+    };
+}
+
+// 构建工作流
+WorkflowNode workflow = new Start("start",
+    new Submit("submit", "张三", 8000,
+        new Approve("mgr", "李经理",
+            new Decision("check", "金额 > 5000",
+                new Approve("dir", "王总监",
+                    new End("end-approve", "审批通过")),
+                new End("end-auto", "自动通过")))));
+
+// 执行
+System.out.println(executeWorkflow(workflow, 8000));
+// 输出:
+// → 开始
+// → 张三 提交申请，金额: 8000.0
+// → 李经理 审批通过
+// → 金额 > 5000，需要总监审批
+// → 王总监 审批通过
+// → 流程结束: 审批通过
 ```
 
 ---

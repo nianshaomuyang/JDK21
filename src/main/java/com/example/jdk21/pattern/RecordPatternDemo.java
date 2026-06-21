@@ -121,37 +121,93 @@ public class RecordPatternDemo {
     }
 
     // ========================================================================
-    // ⑥ 实战：JSON 节点解析（解构 + 递归）
+    // ⑥ 实战：工作流审批流程（解构 + 递归）
     // ========================================================================
     // 这是 Record Patterns 的高级用法：
-    //   - sealed interface 定义 JSON 节点类型
+    //   - sealed interface 定义工作流节点类型
     //   - record 定义每种节点的数据结构
-    //   - switch + 解构 + 递归处理嵌套结构
-    sealed interface JsonNode {}
-    record JsonNull() implements JsonNode {}
-    record JsonBool(boolean value) implements JsonNode {}
-    record JsonNum(double value) implements JsonNode {}
-    record JsonStr(String value) implements JsonNode {}
-    record JsonArr(JsonNode... items) implements JsonNode {}
+    //   - switch + 解构 + 递归处理审批流程
+    //
+    // 场景：请假审批流程
+    //   开始 → 提交申请 → 主管审批 → (金额>5000 ? 总监审批 : 跳过) → 结束
+    //
+    // 工作流节点类型：
+    //   Start      → 开始节点
+    //   Submit     → 提交申请
+    //   Approve    → 审批节点（需要指定审批人）
+    //   Decision   → 条件分支（根据条件走不同分支）
+    //   End        → 结束节点
 
-    static String prettyPrint(JsonNode node, int indent) {
+    sealed interface WorkflowNode permits Start, Submit, Approve, Decision, End {}
+    record Start(String id, WorkflowNode next) implements WorkflowNode {}
+    record Submit(String id, String applicant, double amount, WorkflowNode next) implements WorkflowNode {}
+    record Approve(String id, String approver, WorkflowNode next) implements WorkflowNode {}
+    record Decision(String id, String condition, WorkflowNode trueBranch, WorkflowNode falseBranch) implements WorkflowNode {}
+    record End(String id, String status) implements WorkflowNode {}
+
+    /**
+     * 打印工作流结构（解构 + 递归）
+     */
+    static String printWorkflow(WorkflowNode node, int indent) {
         String pad = "  ".repeat(indent);
         return switch (node) {
-            case JsonNull _      -> pad + "null";
-            case JsonBool(var v) -> pad + v;
-            case JsonNum(var v)  -> pad + (v == (long) v ? (long) v : v);
-            case JsonStr(var v)  -> pad + "\"" + v + "\"";
-            case JsonArr(var items) -> {
-                // 解构 + 递归
-                var sb = new StringBuilder(pad + "[\n");
-                for (int i = 0; i < items.length; i++) {
-                    sb.append(prettyPrint(items[i], indent + 1));  // 递归处理每个元素
-                    if (i < items.length - 1) sb.append(",");
-                    sb.append("\n");
-                }
-                sb.append(pad).append("]");
-                yield sb.toString();
-            }
+            case Start(var id, var next) ->
+                pad + "[开始] " + id + "\n" + printWorkflow(next, indent + 1);
+
+            case Submit(var id, var applicant, var amount, var next) ->
+                pad + "[提交] " + id + " | 申请人: " + applicant + " | 金额: " + amount + "\n"
+                    + printWorkflow(next, indent + 1);
+
+            case Approve(var id, var approver, var next) ->
+                pad + "[审批] " + id + " | 审批人: " + approver + "\n"
+                    + printWorkflow(next, indent + 1);
+
+            case Decision(var id, var condition, var trueBranch, var falseBranch) ->
+                pad + "[判断] " + id + " | 条件: " + condition + "\n"
+                    + pad + "  ├─ 是:\n" + printWorkflow(trueBranch, indent + 2)
+                    + pad + "  └─ 否:\n" + printWorkflow(falseBranch, indent + 2);
+
+            case End(var id, var status) ->
+                pad + "[结束] " + id + " | 状态: " + status;
+        };
+    }
+
+    /**
+     * 模拟执行工作流（解构 + 递归 + 条件判断）
+     */
+    static String executeWorkflow(WorkflowNode node, double amount) {
+        return switch (node) {
+            case Start(_, var next) ->
+                "→ 开始\n" + executeWorkflow(next, amount);
+
+            case Submit(var id, var applicant, var amt, var next) ->
+                "→ " + applicant + " 提交申请，金额: " + amt + "\n"
+                    + executeWorkflow(next, amt);
+
+            case Approve(var id, var approver, var next) ->
+                "→ " + approver + " 审批通过\n"
+                    + executeWorkflow(next, amount);
+
+            case Decision(_, _, var trueBranch, var falseBranch) ->
+                amount > 5000
+                    ? "→ 金额 > 5000，需要总监审批\n" + executeWorkflow(trueBranch, amount)
+                    : "→ 金额 ≤ 5000，主管审批即可\n" + executeWorkflow(falseBranch, amount);
+
+            case End(_, var status) ->
+                "→ 流程结束: " + status;
+        };
+    }
+
+    /**
+     * 统计工作流节点数（解构 + 递归）
+     */
+    static int countNodes(WorkflowNode node) {
+        return switch (node) {
+            case Start(_, var next) -> 1 + countNodes(next);
+            case Submit(_, _, _, var next) -> 1 + countNodes(next);
+            case Approve(_, _, var next) -> 1 + countNodes(next);
+            case Decision(_, _, var trueBranch, var falseBranch) -> 1 + countNodes(trueBranch) + countNodes(falseBranch);
+            case End(_, _) -> 1;
         };
     }
 
@@ -220,17 +276,27 @@ public class RecordPatternDemo {
         }
         System.out.println("  说明: 解构 + 计算，替代 getter 链");
 
-        // ---- ⑥ JSON 节点解析 ----
-        System.out.println("\n⑥ JSON 节点解析（解构 + 递归）");
-        JsonNode json = new JsonArr(
-            new JsonStr("hello"),
-            new JsonNum(42),
-            new JsonBool(true),
-            new JsonNull(),
-            new JsonArr(new JsonNum(1), new JsonNum(2), new JsonNum(3))
-        );
-        System.out.println(prettyPrint(json, 0));
-        System.out.println("  说明: sealed + record + switch + 递归 = 完整的 JSON 处理");
+        // ---- ⑥ 工作流审批流程 ----
+        System.out.println("\n⑥ 工作流审批流程（解构 + 递归）");
+
+        // 构建工作流：请假审批
+        // 开始 → 提交申请 → 主管审批 → (金额>5000 ? 总监审批 : 跳过) → 结束
+        WorkflowNode workflow = new Start("start",
+            new Submit("submit", "张三", 8000,
+                new Approve("mgr", "李经理",
+                    new Decision("check-amount", "金额 > 5000",
+                        new Approve("dir", "王总监",
+                            new End("end-approve", "审批通过")),
+                        new End("end-auto", "自动通过")))));
+
+        System.out.println("  工作流结构:");
+        System.out.println(printWorkflow(workflow, 0));
+
+        System.out.println("  模拟执行（金额 8000）:");
+        System.out.println(executeWorkflow(workflow, 8000));
+
+        System.out.println("  节点总数: " + countNodes(workflow));
+        System.out.println("  说明: sealed + record + switch + 递归 = 工作流 DSL");
 
         // ---- Before / After 对比 ----
         System.out.println("\nBefore / After 对比");
